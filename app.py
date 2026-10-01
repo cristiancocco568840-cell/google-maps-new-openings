@@ -11,6 +11,7 @@ app.secret_key = os.getenv('SECRET_KEY','change-me')
 DB_PATH = os.getenv('DB_PATH','places.db')
 API_KEY = os.getenv('GOOGLE_MAPS_API_KEY','')
 PLACES_URL = 'https://places.googleapis.com/v1/places:searchNearby'
+MONTHLY_REQUEST_BUDGET = int(os.getenv('MONTHLY_REQUEST_BUDGET','4500'))
 
 TYPE_GROUPS = {
  'Food & hospitality':['restaurant','cafe','bar','bakery','coffee_shop','pizza_restaurant','hotel'],
@@ -93,20 +94,33 @@ def norm(p):
             'phone':clean_phone(p.get('nationalPhoneNumber','')),'website':p.get('websiteUri',''),'maps_uri':p.get('googleMapsUri',''),
             'lat':loc.get('latitude'),'lon':loc.get('longitude')}
 
+def monthly_requests_used(c, now_iso):
+    month = now_iso[:7]
+    row = c.execute("SELECT COALESCE(SUM(requests_count),0) AS n FROM scans WHERE substr(created_at,1,7)=?", (month,)).fetchone()
+    return int(row['n'] or 0)
+
 def run_scan(lat,lon,coverage_km,radius,selected_types,contacts=True):
-    init_db(); c=conn(); baseline=c.execute('SELECT COUNT(*) n FROM places').fetchone()['n']==0; now=datetime.now(timezone.utc).isoformat()
+    init_db(); c=conn(); baseline=c.execute('SELECT COUNT(*) n FROM places').fetchone()['n']==0; now=datetime.now(timezone.utc).isoformat(); used=monthly_requests_used(c,now); remaining=max(0,MONTHLY_REQUEST_BUDGET-used)
+    if remaining <= 0:
+        c.close(); raise RuntimeError(f'Budget mensile Google Places raggiunto ({MONTHLY_REQUEST_BUDGET} richieste).')
     cur=c.execute('INSERT INTO scans(created_at,center_lat,center_lon,coverage_km,cell_radius_m,types_count,is_baseline) VALUES(?,?,?,?,?,?,?)',(now,lat,lon,coverage_km,radius,len(selected_types),int(baseline)))
     scan_id=cur.lastrowid; c.commit(); seen=set(); new=set(); future=set(); req=0
+    stop=False
     for glat,glon in grid(lat,lon,coverage_km,radius):
+        if stop: break
         for b in batches(selected_types,8):
+            if req >= remaining:
+                stop=True; break
             try:
-                places=nearby(glat,glon,radius,b,contacts); req+=1
+                places=nearby(glat,glon,radius,b,False); req+=1
             except RuntimeError as e:
                 if '400' not in str(e): raise
                 places=[]; tmp={}
                 for t in b:
+                    if req >= remaining:
+                        stop=True; break
                     try:
-                        part=nearby(glat,glon,radius,[t],contacts); req+=1
+                        part=nearby(glat,glon,radius,[t],False); req+=1
                         for x in part:
                             if x.get('id'): tmp[x['id']]=x
                     except RuntimeError as e2:
@@ -140,7 +154,7 @@ def index():
 @app.post('/scan')
 def scan():
     try:
-        name=request.form.get('preset','Milano'); p=PRESETS.get(name,PRESETS['Milano']); lat=float(request.form.get('lat') or p['lat']); lon=float(request.form.get('lon') or p['lon']); km=float(request.form.get('coverage_km') or p['coverage_km']); radius=float(request.form.get('cell_radius_m') or 500); contacts=request.form.get('include_contact')=='1'; types=request.form.getlist('types') or ALL_TYPES
+        name=request.form.get('preset','Milano'); p=PRESETS.get(name,PRESETS['Milano']); lat=float(request.form.get('lat') or p['lat']); lon=float(request.form.get('lon') or p['lon']); km=float(request.form.get('coverage_km') or p['coverage_km']); radius=float(request.form.get('cell_radius_m') or 7500); contacts=False; types=request.form.getlist('types') or ALL_TYPES
         sid,base=run_scan(lat,lon,km,radius,types,contacts); flash('Baseline creata: dalle prossime scansioni vedrai solo i nuovi Place ID.' if base else 'Scansione completata.','success'); return redirect(url_for('results',scan_id=sid))
     except Exception as e: flash(str(e),'danger'); return redirect(url_for('index'))
 
