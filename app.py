@@ -1,10 +1,12 @@
-import os, math, sqlite3, io, time
+import os, math, io, time
 from datetime import datetime, timezone
 import requests
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from db_adapter import conn, init_db, engine
+from baseline_filter import historical_name_match, BASELINE_SOURCE_ROWS, BASELINE_UNIQUE_NAMES
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY','change-me')
@@ -29,23 +31,6 @@ PRESETS = {
  'Monza':{'lat':45.5845,'lon':9.2744,'coverage_km':8.0},
  'Varese':{'lat':45.8206,'lon':8.8251,'coverage_km':8.0}
 }
-
-def conn():
-    c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row; return c
-
-def init_db():
-    c=conn(); c.executescript('''
-    CREATE TABLE IF NOT EXISTS places(
-      place_id TEXT PRIMARY KEY,name TEXT,address TEXT,primary_type TEXT,types TEXT,
-      business_status TEXT,opening_date TEXT,phone TEXT,website TEXT,maps_uri TEXT,
-      lat REAL,lon REAL,first_seen TEXT NOT NULL,last_seen TEXT NOT NULL,first_scan_id INTEGER,
-      baseline INTEGER DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS scans(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL,center_lat REAL,center_lon REAL,
-      coverage_km REAL,cell_radius_m REAL,types_count INTEGER,requests_count INTEGER DEFAULT 0,
-      places_seen INTEGER DEFAULT 0,new_places INTEGER DEFAULT 0,future_openings INTEGER DEFAULT 0,
-      is_baseline INTEGER DEFAULT 0);
-    '''); c.commit(); c.close()
 
 def clean_phone(v):
     if not v:return ''
@@ -134,8 +119,9 @@ def run_scan(lat,lon,coverage_km,radius,selected_types,contacts=True):
                 if p['business_status']=='FUTURE_OPENING': future.add(pid)
                 exists=c.execute('SELECT 1 FROM places WHERE place_id=?',(pid,)).fetchone()
                 if not exists:
-                    if not baseline: new.add(pid)
-                    c.execute('''INSERT INTO places VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(pid,p['name'],p['address'],p['primary_type'],p['types'],p['business_status'],p['opening_date'],p['phone'],p['website'],p['maps_uri'],p['lat'],p['lon'],now,now,scan_id,int(baseline)))
+                    known = baseline or historical_name_match(p['name'])
+                    if not known: new.add(pid)
+                    c.execute('''INSERT INTO places VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(pid,p['name'],p['address'],p['primary_type'],p['types'],p['business_status'],p['opening_date'],p['phone'],p['website'],p['maps_uri'],p['lat'],p['lon'],now,now,scan_id,int(known)))
                 else:
                     c.execute('''UPDATE places SET name=?,address=?,primary_type=?,types=?,business_status=?,opening_date=?,phone=CASE WHEN ?<>'' THEN ? ELSE phone END,website=CASE WHEN ?<>'' THEN ? ELSE website END,maps_uri=?,lat=?,lon=?,last_seen=? WHERE place_id=?''',(p['name'],p['address'],p['primary_type'],p['types'],p['business_status'],p['opening_date'],p['phone'],p['phone'],p['website'],p['website'],p['maps_uri'],p['lat'],p['lon'],now,pid))
             c.commit(); time.sleep(.01)
@@ -144,12 +130,12 @@ def run_scan(lat,lon,coverage_km,radius,selected_types,contacts=True):
 def get_scan(scan_id):
     c=conn(); s=c.execute('SELECT * FROM scans WHERE id=?',(scan_id,)).fetchone()
     if not s: c.close(); return None,[],[]
-    new=[] if s['is_baseline'] else c.execute('SELECT * FROM places WHERE first_scan_id=? ORDER BY first_seen DESC',(scan_id,)).fetchall()
+    new=[] if s['is_baseline'] else c.execute('SELECT * FROM places WHERE first_scan_id=? AND baseline=0 ORDER BY first_seen DESC',(scan_id,)).fetchall()
     fut=c.execute("SELECT * FROM places WHERE business_status='FUTURE_OPENING' ORDER BY opening_date,first_seen DESC").fetchall(); c.close(); return s,new,fut
 
 @app.route('/')
 def index():
-    init_db(); c=conn(); totals={'places':c.execute('SELECT COUNT(*) n FROM places').fetchone()['n'],'scans':c.execute('SELECT COUNT(*) n FROM scans').fetchone()['n'],'future':c.execute("SELECT COUNT(*) n FROM places WHERE business_status='FUTURE_OPENING'").fetchone()['n']}; latest=c.execute('SELECT * FROM scans ORDER BY id DESC LIMIT 10').fetchall(); c.close(); return render_template('index.html',presets=PRESETS,groups=TYPE_GROUPS,totals=totals,latest=latest)
+    init_db(); c=conn(); totals={'places':c.execute('SELECT COUNT(*) n FROM places').fetchone()['n'],'scans':c.execute('SELECT COUNT(*) n FROM scans').fetchone()['n'],'future':c.execute("SELECT COUNT(*) n FROM places WHERE business_status='FUTURE_OPENING'").fetchone()['n']}; latest=c.execute('SELECT * FROM scans ORDER BY id DESC LIMIT 10').fetchall(); c.close(); return render_template('index.html',presets=PRESETS,groups=TYPE_GROUPS,totals=totals,latest=latest,db_backend=engine.dialect.name,baseline_rows=BASELINE_SOURCE_ROWS,baseline_names=BASELINE_UNIQUE_NAMES)
 
 @app.post('/scan')
 def scan():
