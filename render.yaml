@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: google-maps-new-openings
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 1800 app:app
+    envVars:
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DB_PATH
+        value: /var/data/places.db
+      - key: AUTO_SCAN_ENABLED
+        value: "false"
+      - key: AUTO_SCAN_TIMEZONE
+        value: Europe/Rome
+      - key: AUTO_SCAN_HOUR
+        value: "7"
+      - key: AUTO_SCAN_MINUTE
+        value: "30"
+      - key: AUTO_SCAN_PRESET
+        value: Milano
+      - key: AUTO_SCAN_COVERAGE_KM
+        value: "15"
+      - key: AUTO_SCAN_CELL_RADIUS_M
+        value: "500"
+      - key: AUTO_SCAN_INCLUDE_CONTACT
+        value: "true"
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+    disk:
+      name: places-data
+      mountPath: /var/data
+      sizeGB: 1
