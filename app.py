@@ -1,7 +1,7 @@
 import os, math, io, time
 from datetime import datetime, timezone
 import requests
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, Response
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -132,6 +132,16 @@ def get_scan(scan_id):
     if not s: c.close(); return None,[],[]
     new=[] if s['is_baseline'] else c.execute('SELECT * FROM places WHERE first_scan_id=? AND baseline=0 ORDER BY first_seen DESC',(scan_id,)).fetchall()
     fut=c.execute("SELECT * FROM places WHERE business_status='FUTURE_OPENING' ORDER BY opening_date,first_seen DESC").fetchall(); c.close(); return s,new,fut
+
+@app.route('/status.md')
+def status_md():
+    init_db(); c=conn(); latest=c.execute('SELECT * FROM scans ORDER BY id DESC LIMIT 1').fetchone(); totals={'places':c.execute('SELECT COUNT(*) n FROM places').fetchone()['n'],'scans':c.execute('SELECT COUNT(*) n FROM scans').fetchone()['n'],'future':c.execute("SELECT COUNT(*) n FROM places WHERE business_status='FUTURE_OPENING'").fetchone()['n']}; now=datetime.now(timezone.utc).isoformat(); used=monthly_requests_used(c,now); c.close()
+    lines=['# Google Maps New Openings — stato automatico','',f'Aggiornato automaticamente: {now}',f'Scansioni totali: {totals["scans"]}',f'Attività nel bacino: {totals["places"]}',f'Aperture future note: {totals["future"]}',f'Richieste Google Places usate nel mese: {used}/{MONTHLY_REQUEST_BUDGET}','']
+    if latest:
+        lines += ['## Ultima scansione',f'ID: {latest["id"]}',f'Data: {latest["created_at"]}',f'Copertura: {latest["coverage_km"]} km',f'Categorie interrogate: {latest["types_count"]}',f'Attività viste: {latest["places_seen"] or 0}',f'Nuove attività: {latest["new_places"] or 0}',f'Aperture future: {latest["future_openings"] or 0}',f'Richieste API: {latest["requests_count"] or 0}',f'Baseline: {"sì" if latest["is_baseline"] else "no"}']
+    else:
+        lines += ['## Ultima scansione','Nessuna scansione disponibile.']
+    return Response('\n'.join(lines)+'\n',mimetype='text/markdown; charset=utf-8')
 
 @app.route('/')
 def index():
