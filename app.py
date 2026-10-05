@@ -89,7 +89,7 @@ def run_scan(lat,lon,coverage_km,radius,selected_types,contacts=True):
     if remaining <= 0:
         c.close(); raise RuntimeError(f'Budget mensile Google Places raggiunto ({MONTHLY_REQUEST_BUDGET} richieste).')
     cur=c.execute('INSERT INTO scans(created_at,center_lat,center_lon,coverage_km,cell_radius_m,types_count,is_baseline) VALUES(?,?,?,?,?,?,?)',(now,lat,lon,coverage_km,radius,len(selected_types),int(baseline)))
-    scan_id=cur.lastrowid; c.commit(); seen=set(); new=set(); future=set(); req=0
+    scan_id=cur.lastrowid; c.commit(); seen=set(); new=set(); future=set(); unseen_candidates=set(); historical_filtered=set(); req=0
     stop=False
     for glat,glon in grid(lat,lon,coverage_km,radius):
         if stop: break
@@ -119,13 +119,15 @@ def run_scan(lat,lon,coverage_km,radius,selected_types,contacts=True):
                 if p['business_status']=='FUTURE_OPENING': future.add(pid)
                 exists=c.execute('SELECT 1 FROM places WHERE place_id=?',(pid,)).fetchone()
                 if not exists:
+                    unseen_candidates.add(pid)
                     known = baseline or historical_name_match(p['name'])
+                    if known and not baseline: historical_filtered.add(pid)
                     if not known: new.add(pid)
                     c.execute('''INSERT INTO places VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(pid,p['name'],p['address'],p['primary_type'],p['types'],p['business_status'],p['opening_date'],p['phone'],p['website'],p['maps_uri'],p['lat'],p['lon'],now,now,scan_id,int(known)))
                 else:
                     c.execute('''UPDATE places SET name=?,address=?,primary_type=?,types=?,business_status=?,opening_date=?,phone=CASE WHEN ?<>'' THEN ? ELSE phone END,website=CASE WHEN ?<>'' THEN ? ELSE website END,maps_uri=?,lat=?,lon=?,last_seen=? WHERE place_id=?''',(p['name'],p['address'],p['primary_type'],p['types'],p['business_status'],p['opening_date'],p['phone'],p['phone'],p['website'],p['website'],p['maps_uri'],p['lat'],p['lon'],now,pid))
             c.commit(); time.sleep(.01)
-    c.execute('UPDATE scans SET requests_count=?,places_seen=?,new_places=?,future_openings=? WHERE id=?',(req,len(seen),len(new),len(future),scan_id)); c.commit(); c.close(); return scan_id,baseline
+    c.execute('UPDATE scans SET requests_count=?,places_seen=?,new_places=?,future_openings=? WHERE id=?',(req,len(seen),len(new),len(future),scan_id)); c.commit(); print(f'DIAGNOSTIC scan #{scan_id}: seen={len(seen)} unseen_place_ids={len(unseen_candidates)} historical_filtered={len(historical_filtered)} final_new={len(new)} future={len(future)} requests={req}',flush=True); c.close(); return scan_id,baseline
 
 def get_scan(scan_id):
     c=conn(); s=c.execute('SELECT * FROM scans WHERE id=?',(scan_id,)).fetchone()
