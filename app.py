@@ -97,19 +97,19 @@ def run_scan(lat,lon,coverage_km,radius,selected_types,contacts=True):
             if req >= remaining:
                 stop=True; break
             try:
-                places=nearby(glat,glon,radius,b,False); req+=1
+                req+=1; places=nearby(glat,glon,radius,b,False)
             except RuntimeError as e:
-                if '400' not in str(e): raise
+                if '400' not in str(e) or not any(code in str(e) for code in ('includedTypes', 'included_types')): raise
                 places=[]; tmp={}
                 for t in b:
                     if req >= remaining:
                         stop=True; break
                     try:
-                        part=nearby(glat,glon,radius,[t],False); req+=1
+                        req+=1; part=nearby(glat,glon,radius,[t],False)
                         for x in part:
                             if x.get('id'): tmp[x['id']]=x
                     except RuntimeError as e2:
-                        if '400' in str(e2): continue
+                        if '400' in str(e2) and any(code in str(e2) for code in ('includedTypes', 'included_types')): continue
                         raise
                 places=list(tmp.values())
             for raw in places:
@@ -154,7 +154,9 @@ def scan():
     try:
         name=request.form.get('preset','Milano'); p=PRESETS.get(name,PRESETS['Milano']); lat=float(request.form.get('lat') or p['lat']); lon=float(request.form.get('lon') or p['lon']); km=float(request.form.get('coverage_km') or p['coverage_km']); radius=float(request.form.get('cell_radius_m') or 7500); contacts=False; types=request.form.getlist('types') or ALL_TYPES
         sid,base=run_scan(lat,lon,km,radius,types,contacts); flash('Baseline creata: dalle prossime scansioni vedrai solo i nuovi Place ID.' if base else 'Scansione completata.','success'); return redirect(url_for('results',scan_id=sid))
-    except Exception as e: flash(str(e),'danger'); return redirect(url_for('index'))
+    except Exception as e:
+        print('SCAN FAILED:',str(e),flush=True)
+        flash(str(e),'danger'); return redirect(url_for('index'))
 
 @app.route('/results/<int:scan_id>')
 def results(scan_id):
